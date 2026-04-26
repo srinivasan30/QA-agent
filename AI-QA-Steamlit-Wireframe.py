@@ -1,21 +1,7 @@
 """
 ========================================================================
- End-to-End AI QA Portal   (v4 — clean & tidy)
-------------------------------------------------------------------------
- ▸ Upload panel (left) and Summary Viewer (right) — same fixed height,
-   summary viewer is scrollable so the gap to "Quality Assurance"
-   stays small
- ▸ "Upload Files & Generate Summary" fires TWO jobs sequentially:
-        1) File-Copy job          (/Workspace → UC Volume)
-        2) Summary (STM-Summarizer) job
-     Summary output is parsed and painted into the right panel.
- ▸ Button colour tracks job state automatically:
-        idle    = blue
-        running = yellow (pulses)
-        success = green
-        failed  = red
- ▸ Dino runner renders only while a job is running.
- ▸ Job Execution History table at the bottom.
+ End-to-End AI QA Portal   (v6 — compact single-page, inline status,
+                              light-blue theme, no STM labels)
 ========================================================================
 """
 
@@ -29,7 +15,7 @@ import base64
 from datetime import datetime
 
 # =========================================================================
-# 1. CONFIG   (move to st.secrets in production!)
+# 1. CONFIG
 # =========================================================================
 DATABRICKS_HOST = "https://dbc-927300a1-adc8.cloud.databricks.com"
 TOKEN           = "dapi180370eb25ac521baee3f96924db98e9"
@@ -37,15 +23,14 @@ TOKEN           = "dapi180370eb25ac521baee3f96924db98e9"
 WORKSPACE_UPLOAD_DIR = "/Shared/qa_uploads"
 VOLUME_PATH          = "/Volumes/edl_qa/qa_agent/qa_validation_input"
 
-# Job IDs -----------------------------------------------------------------
-FILE_COPY_JOB_ID = 1095682687953224        # copies workspace → volume
-SUMMARY_JOB_ID   = 29471425720129         # STM summarizer
+FILE_COPY_JOB_ID = 1095682687953224
+SUMMARY_JOB_ID   = 29471425720129
 
 JOB_IDS = {
-    "Run All Validation" : 566631342323223,
-    "STM Validation"     : 190540510295693,
-    "SCD Validation"     : 909635921592434,
-    "Test Case Generator": 160480032307967,
+    "Run All Validation"  : 566631342323223,
+    "Structure Validation": 190540510295693,
+    "SCD Validation"      : 909635921592434,
+    "Test Case Generator" : 160480032307967,
 }
 
 HEADERS = {
@@ -57,176 +42,536 @@ HEADERS = {
 # 2. PAGE CONFIG
 # =========================================================================
 st.set_page_config(
-    page_title="End-to-End AI QA",
-    page_icon="✅",
+    page_title="IngestIQ™ AI QA",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 # =========================================================================
-# 3. GLOBAL CSS  (tight, modern look)
+# 3. CSS — light-blue theme, zero gaps, single-page
 # =========================================================================
 st.markdown("""
 <style>
-/* tighter page padding & element gaps */
-.block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
-div[data-testid="stVerticalBlock"] > div { gap: 0.6rem; }
+/* ── Google Font ───────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
 
-/* ---- button status colours ---------------------------------------- */
+/* ── Global reset / font ───────────────────────────────────────────── */
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif !important;
+}
+
+/* ── Shrink Streamlit's default top padding to near-zero ───────────── */
+.block-container {
+    padding-top: 0.6rem !important;
+    padding-bottom: 0.6rem !important;
+    max-width: 100% !important;
+}
+header[data-testid="stHeader"] { display: none !important; }
+.stApp > header { display: none !important; }
+
+/* Remove blank space Streamlit adds after st.title / st.caption */
+.stMarkdown h1 { margin-bottom: 0 !important; }
+.element-container:has(h1) { margin-bottom: 0 !important; }
+div[data-testid="stVerticalBlock"] > div:first-child { padding-top: 0 !important; }
+
+/* ── Light-blue palette for ALL bordered containers ────────────────── */
+[data-testid="stContainerWithBorder"],
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: linear-gradient(145deg, #EFF6FF 0%, #DBEAFE 100%) !important;
+    border: 1.5px solid #BFDBFE !important;
+    border-radius: 14px !important;
+    box-shadow: 0 2px 10px rgba(37,99,235,0.07) !important;
+}
+
+/* nested containers — slightly lighter */
+[data-testid="stContainerWithBorder"] [data-testid="stContainerWithBorder"] {
+    background: rgba(255,255,255,0.72) !important;
+    border: 1px dashed #93C5FD !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+}
+
+/* ── Subheader / caption ───────────────────────────────────────────── */
+h3 { color: #1e40af !important; font-size: 1rem !important;
+     letter-spacing: -.01em; margin-bottom: 6px !important; }
+.stCaption p { color: #64748b !important; font-size: 0.78rem !important; }
+
+/* ── File uploader ──────────────────────────────────────────────────── */
+[data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.8) !important;
+    border: 2px dashed #93C5FD !important;
+    border-radius: 10px !important;
+}
+
+/* ── Status badge colours (button wrappers) ─────────────────────────── */
 .btn-idle    button { background:#2563EB !important; color:#fff !important; }
-.btn-running button { background:#FACC15 !important; color:#111 !important;
-                       animation: pulse 1.1s infinite;}
+.btn-running button { background:#0EA5E9 !important; color:#fff !important;
+                      animation: pulse 1.2s infinite; }
 .btn-success button { background:#16A34A !important; color:#fff !important; }
 .btn-failed  button { background:#DC2626 !important; color:#fff !important; }
+@keyframes pulse { 0%{opacity:1;} 50%{opacity:.5;} 100%{opacity:1;} }
 
-@keyframes pulse {
-    0%   { box-shadow: 0 0 0 0   rgba(250,204, 21,.8); }
-    70%  { box-shadow: 0 0 0 10px rgba(250,204, 21,0); }
-    100% { box-shadow: 0 0 0 0   rgba(250,204, 21,0); }
-}
-
-/* buttons polished */
-.stButton > button {
-    height: 52px;
-    border-radius: 10px;
-    font-weight: 600;
-    font-size: 15px;
-    transition: transform .1s ease;
+/* ── Compact QA buttons ─────────────────────────────────────────────── */
+.btn-compact button {
+    padding: 5px 14px !important;
+    font-size: 11.5px !important;
+    font-weight: 700 !important;
+    min-height: 36px !important;
+    height: 36px !important;
+    border-radius: 8px !important;
+    letter-spacing: 0.04em !important;
     border: none !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.18) !important;
+    width: 100% !important;
+    transition: opacity 0.15s ease, transform 0.1s ease !important;
 }
-.stButton > button:hover   { transform: translateY(-1px); }
-.stButton > button:active  { transform: translateY(0); }
+.btn-compact button:hover { opacity:.88 !important; transform:translateY(-1px) !important; }
+.btn-compact-idle    button { background:#2563EB !important; color:#fff !important; }
+.btn-compact-running button { background:#0EA5E9 !important; color:#fff !important;
+                               animation: pulse 1.2s infinite; }
+.btn-compact-success button { background:#16A34A !important; color:#fff !important; }
+.btn-compact-failed  button { background:#DC2626 !important; color:#fff !important; }
+.btn-compact { margin-bottom:0 !important; }
+.btn-compact > div { margin-bottom:0 !important; }
 
-/* bordered containers */
-[data-testid="stVerticalBlockBorderWrapper"] {
-    border-radius: 14px !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,.04);
-}
-
-/* dataframe polish */
-.stDataFrame, .stDataFrame [data-testid="stElementToolbar"] {
+/* ── Inline log / status card ───────────────────────────────────────── */
+.status-card {
+    background: rgba(255,255,255,0.88);
+    border: 1.5px solid #BFDBFE;
     border-radius: 10px;
+    padding: 12px 16px;
+    margin-top: 10px;
+    font-family: 'DM Sans', sans-serif;
+}
+.status-card .sc-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1e40af;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.status-card .sc-phase {
+    font-size: 11.5px;
+    color: #374151;
+    margin-bottom: 6px;
+}
+.status-card .sc-bar-wrap {
+    background: #DBEAFE;
+    border-radius: 999px;
+    overflow: hidden;
+    height: 8px;
+    margin-bottom: 5px;
+}
+.status-card .sc-bar-fill {
+    background: linear-gradient(90deg, #60A5FA, #2563EB);
+    height: 100%;
+    border-radius: 999px;
+    transition: width 0.5s ease;
+}
+.status-card .sc-pct {
+    font-size: 10.5px;
+    color: #6b7280;
+    text-align: right;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.status-card ul.sc-steps {
+    list-style: none;
+    padding: 0; margin: 0;
+    font-size: 11px;
+}
+.status-card ul.sc-steps li { padding: 2px 0; color: #6b7280; }
+.status-card ul.sc-steps li.done   { color: #16A34A; }
+.status-card ul.sc-steps li.active { color: #1d4ed8; font-weight: 700; }
+
+/* ── Progress tracker card (QA validation) ──────────────────────────── */
+.progress-card {
+    background: rgba(255,255,255,0.9);
+    border: 1.5px solid #BFDBFE;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 2px 8px rgba(37,99,235,0.08);
+    font-family: 'DM Sans', sans-serif;
+    color: #1f2937;
+    margin: 10px 0;
+}
+.progress-card .pc-title {
+    font-size: 14px; font-weight: 700; color: #1e40af;
+    margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.progress-card .pc-phase { font-size: 12px; color: #374151; margin-bottom: 7px; }
+.progress-card .pc-phase b { color: #1e40af; }
+.progress-card .pc-bar-wrap {
+    background: #DBEAFE; border-radius: 999px;
+    overflow: hidden; height: 12px; margin-bottom: 5px;
+}
+.progress-card .pc-bar-fill {
+    background: linear-gradient(90deg, #60A5FA, #2563EB);
+    height: 100%; border-radius: 999px; transition: width 0.6s ease;
+}
+.progress-card .pc-pct {
+    font-size: 11px; color: #64748b; text-align: right;
+    font-weight: 600; margin-bottom: 8px;
+}
+.progress-card ul.pc-steps {
+    list-style: none; padding: 0; margin: 8px 0 0; font-size: 11.5px;
+}
+.progress-card ul.pc-steps li { padding: 2.5px 0; color: #6b7280; }
+.progress-card ul.pc-steps li.done   { color: #16A34A; }
+.progress-card ul.pc-steps li.active { color: #1d4ed8; font-weight: 700; }
+
+/* ── Header strip ───────────────────────────────────────────────────── */
+.iq-header {
+    background: linear-gradient(135deg, #1e40af 0%, #2563EB 60%, #38BDF8 100%);
+    border-radius: 14px;
+    padding: 14px 24px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 4px 18px rgba(37,99,235,0.25);
+}
+.iq-header .iq-title {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+}
+.iq-header .iq-sub {
+    font-size: 0.77rem;
+    color: rgba(255,255,255,0.78);
+    margin-top: 3px;
+    font-weight: 400;
+}
+.iq-badge {
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 8px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.06em;
 }
 
-/* subheader compactness */
-.stSubheader { margin-bottom: 0.4rem !important; }
+/* ── Section title bars ─────────────────────────────────────────────── */
+.sec-bar {
+    background: linear-gradient(90deg, #1e40af, #3B82F6);
+    color: #fff;
+    font-size: 12.5px;
+    font-weight: 700;
+    padding: 7px 14px;
+    border-radius: 7px 7px 0 0;
+    margin-bottom: 0;
+    letter-spacing: 0.03em;
+}
 
-/* make the title nicer */
-h1 { margin-bottom: 0.4rem !important; }
+/* ── Dataframe tweaks ───────────────────────────────────────────────── */
+[data-testid="stDataFrame"] {
+    border-radius: 8px !important;
+    overflow: hidden !important;
+}
 
-/* remove the big divider gap */
-hr { margin: 1rem 0 !important; }
+/* ── Divider ────────────────────────────────────────────────────────── */
+hr { border-color: #BFDBFE !important; margin: 8px 0 !important; }
+
+/* ── Info/warning boxes ─────────────────────────────────────────────── */
+.stAlert { border-radius: 10px !important; font-size: 12px !important; }
+
+/* ── Expander ───────────────────────────────────────────────────────── */
+[data-testid="stExpander"] {
+    background: rgba(255,255,255,0.6) !important;
+    border: 1px solid #BFDBFE !important;
+    border-radius: 8px !important;
+}
+
+/* ── Radio ──────────────────────────────────────────────────────────── */
+[data-testid="stRadio"] label { font-size: 12.5px !important; }
+
+/* hide Streamlit top decoration */
+#MainMenu, footer, [data-testid="stDecoration"] { display:none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# MutationObserver — override emotion inline styles reliably
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+(function(){
+  var BG  = 'linear-gradient(145deg,#EFF6FF 0%,#DBEAFE 100%)';
+  var BDR = '1.5px solid #BFDBFE';
+  function applyBg(root){
+    var els=(root||document).querySelectorAll(
+      '[data-testid="stContainerWithBorder"],[data-testid="stVerticalBlockBorderWrapper"]');
+    els.forEach(function(el){
+      var par=el.parentElement&&el.parentElement.closest('[data-testid="stContainerWithBorder"]');
+      if(par){
+        el.style.setProperty('background','rgba(255,255,255,0.68)','important');
+        el.style.setProperty('border','1px dashed #93C5FD','important');
+      } else {
+        el.style.setProperty('background',BG,'important');
+        el.style.setProperty('border',BDR,'important');
+        el.style.setProperty('border-radius','14px','important');
+        el.style.setProperty('box-shadow','0 2px 10px rgba(37,99,235,0.07)','important');
+      }
+    });
+  }
+  applyBg(document);
+  var obs=new MutationObserver(function(m){m.forEach(function(x){if(x.addedNodes.length)applyBg(document);});});
+  obs.observe(document.body,{childList:true,subtree:true});
+})();
+</script>
+""", height=0, scrolling=False)
+
 # =========================================================================
-# 4. SESSION STATE
+# 4. SESSION-STATE BOOTSTRAP
 # =========================================================================
-def _init_state():
-    defaults = {
-        "uploaded_stm_names"  : [],
-        "uploaded_file_paths" : [],
-        "btn_status" : {
-            "upload_summary": "idle",
-            "run_all"       : "idle",
-            "stm_val"       : "idle",
-            "scd_val"       : "idle",
-            "tc_gen"        : "idle",
-        },
-        "df_summary"          : pd.DataFrame(columns=["Category", "Details"]),
-        "job_history"         : [],
-        "pending_validation"  : None,
-        "pending_action"      : None,   # pending backend flow to run on next rerun
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-_init_state()
+defaults = {
+    "df_summary"           : pd.DataFrame(),
+    "job_history"          : [],
+    "uploaded_file_names"  : [],   # renamed from uploaded_stm_names
+    "uploaded_file_paths"  : [],
+    "pending_action"       : None,
+    "pending_validation"   : None,
+    "inline_status_html"   : "",   # shown inside upload box
+    "btn_status"           : {
+        "upload_summary": "idle",
+        "run_all"       : "idle",
+        "struct_val"    : "idle",
+        "scd_val"       : "idle",
+        "tc_gen"        : "idle",
+    },
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# =========================================================================
+# 5. DATABRICKS API HELPERS
+# =========================================================================
+def _clean_file_name(fname: str) -> str:
+    return fname.rsplit("/", 1)[-1].rsplit(".", 1)[0]
 
 
-# =========================================================================
-# 5. UTILITIES
-# =========================================================================
-def _clean_stm_name(filename: str) -> str:
-    for ext in (".xlsx", ".xls", ".xlsm", ".csv", ".parquet",
-                ".txt", ".json", ".tsv"):
-        if filename.lower().endswith(ext):
-            return filename[: -len(ext)]
-    return filename
-
-
-def upload_to_workspace(name: str, data_bytes: bytes) -> tuple[bool, str]:
-    ws_path = f"{WORKSPACE_UPLOAD_DIR}/{name}"
-    payload = {
-        "path"     : ws_path,
-        "format"   : "AUTO",
-        "overwrite": True,
-        "content"  : base64.b64encode(data_bytes).decode("utf-8"),
+def upload_to_workspace(fname: str, data: bytes) -> tuple[bool, str]:
+    target = f"{WORKSPACE_UPLOAD_DIR}/{fname}"
+    body = {
+        "path": target, "format": "AUTO", "overwrite": True,
+        "content": base64.b64encode(data).decode(),
     }
     try:
         r = requests.post(
             f"{DATABRICKS_HOST}/api/2.0/workspace/import",
-            headers=HEADERS, json=payload, timeout=180,
+            headers=HEADERS, json=body, timeout=120,
         )
-        if r.status_code in (200, 204):
-            return True, ws_path
-        return False, f"{r.status_code} – {r.text[:180]}"
+        return (True, target) if r.status_code == 200 else (False, f"{r.status_code}: {r.text[:400]}")
     except Exception as e:
         return False, str(e)
 
 
-def trigger_job(job_id: int, params: dict) -> tuple[bool, str | int]:
-    payload = {"job_id": job_id, "notebook_params": params}
+def trigger_job(job_id: int, params: dict) -> tuple[bool, int | str]:
+    body = {"job_id": job_id, "notebook_params": params}
     try:
         r = requests.post(
-            f"{DATABRICKS_HOST}/api/2.2/jobs/run-now",
-            headers=HEADERS, json=payload, timeout=30,
+            f"{DATABRICKS_HOST}/api/2.1/jobs/run-now",
+            headers=HEADERS, json=body, timeout=30,
         )
-        if r.status_code != 200:
-            return False, f"{r.status_code} – {r.text[:180]}"
-        return True, r.json().get("run_id")
+        return (True, r.json()["run_id"]) if r.status_code == 200 else (False, f"{r.status_code}: {r.text[:400]}")
     except Exception as e:
         return False, str(e)
 
 
 def get_run_details(run_id: int) -> dict:
-    return requests.get(
-        f"{DATABRICKS_HOST}/api/2.2/jobs/runs/get",
+    r = requests.get(
+        f"{DATABRICKS_HOST}/api/2.1/jobs/runs/get",
         headers=HEADERS, params={"run_id": run_id}, timeout=30,
-    ).json()
+    )
+    return r.json() if r.status_code == 200 else {}
 
 
 def get_notebook_output(task_run_id: int) -> dict:
-    return requests.get(
-        f"{DATABRICKS_HOST}/api/2.2/jobs/runs/get-output",
+    r = requests.get(
+        f"{DATABRICKS_HOST}/api/2.1/jobs/runs/get-output",
         headers=HEADERS, params={"run_id": task_run_id}, timeout=30,
-    ).json()
+    )
+    return r.json() if r.status_code == 200 else {}
 
 
-def poll_until_done(run_id: int, status_slot=None, label: str = "") -> tuple[str, int]:
-    """Poll a run until it reaches a terminal state.
-       Returns (result_state_or_lifecycle, task_run_id_of_last_task)."""
+# =========================================================================
+# 6. PHASE PLANS
+# =========================================================================
+PHASE_PLANS = {
+    "Uploading & Generating Summary": [
+        ("Uploading source files",             1.0),
+        ("Staging source files to governed storage",      1.5),
+        ("Parsing structure and metadata",             2.0),
+        ("Extracting column inventory by layer",      1.5),
+        ("Generating summary report",                   1.0),
+    ],
+    "Structure Validation": [
+        ("Parsing mapping document metadata",       1.0),
+        ("Resolving source and target artifacts",   1.0),
+        ("Validating RAW source against CSV file",     2.0),
+        ("Validating RAW target against Parquet file", 2.0),
+        ("Validating STD_RAW source (Parquet+audit)",  2.0),
+        ("Validating STD_RAW target (Databricks)",     2.0),
+        ("Validating CURATED source",                  1.5),
+        ("Validating CURATED target",                  1.5),
+        ("Generating formatted validation report",          1.0),
+        ("Rendering dashboard and delivering email",   1.0),
+    ],
+    "SCD Validation": [
+        ("Parsing and resolving target tables",        1.0),
+        ("Validating record counts",    1.5),
+        ("Validating null constraints on key columns",             1.5),
+        ("Performing aggregate validations",       2.0),
+        ("Validating primary‑key uniqueness",          1.5),
+        ("Performing column-level data validation",  2.5),
+        ("Validating control fields",                        1.5),
+        ("Validating SCD",                    2.0),
+        ("Generating formatted validation output",           1.0),
+    ],
+    "Test Case Generator": [
+        ("Parsing and extracting business rules",      1.0),
+        ("Deriving test scenarios",          2.0),
+        ("Generating test cases by category",  2.5),
+        ("Formatting test-case workbook",              1.5),
+        ("Finalizing and delivering artifacts",        1.0),
+    ],
+    "Run All Validation": [
+        ("Preparing data for validation",         1.0),
+        ("Executing structure validations",    3.0),
+        ("Executing SCD validations",3.0),
+        ("Executing data and control validations",  2.5),
+        ("Generating test cases",                      2.0),
+        ("Consolidating and distributing reports", 1.5),
+    ],
+}
+
+
+# =========================================================================
+# 7. PROGRESS TRACKER — renders inside a given slot
+# =========================================================================
+class ProgressTracker:
+    def __init__(self, slot, kind: str, compact: bool = False):
+        self.slot     = slot
+        self.kind     = kind
+        self.compact  = compact          # True → inline status-card style
+        self.phases   = PHASE_PLANS.get(kind, [(kind, 1.0)])
+        total_w       = sum(w for _, w in self.phases) or 1.0
+        cum = 0.0
+        self.thresholds = []
+        for (_, w) in self.phases:
+            cum += w / total_w * 100.0
+            self.thresholds.append(cum)
+        self.start_ts    = None
+        self.expected_sec = 45.0
+
+    def start(self):
+        self.start_ts = time.time()
+        self._render(pct=0, phase_idx=0)
+
+    def _phase_from_pct(self, pct):
+        for i, t in enumerate(self.thresholds):
+            if pct <= t:
+                return i
+        return len(self.phases) - 1
+
+    def tick(self):
+        if self.start_ts is None:
+            return
+        pct = min(95.0, (time.time() - self.start_ts) / self.expected_sec * 95.0)
+        self._render(pct=pct, phase_idx=self._phase_from_pct(pct))
+
+    def done(self):
+        self._render(pct=100.0, phase_idx=len(self.phases)-1, terminal="success")
+
+    def fail(self, message=""):
+        elapsed = time.time() - (self.start_ts or time.time())
+        pct = min(95.0, elapsed / self.expected_sec * 95.0)
+        self._render(pct=pct, phase_idx=self._phase_from_pct(pct),
+                     terminal="failed", message=message)
+
+    def clear(self):
+        self.slot.empty()
+
+    def _render(self, pct, phase_idx, terminal="", message=""):
+        steps_html = ""
+        for i, (label, _) in enumerate(self.phases):
+            if terminal == "success" or i < phase_idx:
+                cls  = "done";   icon = "✓"
+            elif i == phase_idx:
+                cls  = "active"; icon = "▶"
+            else:
+                cls  = "";       icon = "○"
+            steps_html += f'<li class="{cls}">{icon}&nbsp;{label}</li>'
+
+        if terminal == "success":
+            phase_text = "✅ Completed successfully."
+        elif terminal == "failed":
+            phase_text = f"❌ Failed: {message or 'see history'}"
+        elif phase_idx < len(self.phases):
+            phase_text = f"<b>Now:</b> {self.phases[phase_idx][0]}"
+        else:
+            phase_text = ""
+
+        pct_int = int(round(pct))
+        h_icon  = "✅" if terminal == "success" else ("⚠️" if terminal == "failed" else "⏳")
+        h_color = ("#16A34A" if terminal == "success"
+                   else "#DC2626" if terminal == "failed" else "#1e40af")
+
+        if self.compact:
+            # Inline inside upload box
+            html = f"""
+<div class="status-card">
+  <div class="sc-title">
+    <span>{h_icon}</span>
+    <span style="color:{h_color};">{self.kind}</span>
+    <span style="margin-left:auto;font-size:10px;color:#64748b;">{pct_int}%</span>
+  </div>
+  <div class="sc-phase" style="font-size:11.5px;">{phase_text}</div>
+  <div class="sc-bar-wrap">
+    <div class="sc-bar-fill" style="width:{pct_int}%;"></div>
+  </div>
+  <ul class="sc-steps">{steps_html}</ul>
+</div>"""
+        else:
+            html = f"""
+<div class="progress-card">
+  <div class="pc-title">
+    <span style="color:{h_color};">{h_icon}&nbsp;{self.kind}</span>
+    <span style="font-size:11px;color:#64748b;font-weight:500;">{pct_int}% complete</span>
+  </div>
+  <div class="pc-phase">{phase_text}</div>
+  <div class="pc-bar-wrap">
+    <div class="pc-bar-fill" style="width:{pct_int}%;"></div>
+  </div>
+  <ul class="pc-steps">{steps_html}</ul>
+</div>"""
+
+        self.slot.markdown(html, unsafe_allow_html=True)
+
+
+def poll_until_done(run_id, tracker=None, label=""):
     while True:
         info  = get_run_details(run_id)
         state = info.get("state", {})
         lc    = state.get("life_cycle_state", "UNKNOWN")
         rs    = state.get("result_state")
-
-        # track latest task
         tasks = info.get("tasks", [])
         last_task_run_id = tasks[-1]["run_id"] if tasks else run_id
-
-        if status_slot is not None:
-            status_slot.info(f"⏳ {label} · `{lc}`")
-
+        if tracker is not None:
+            tracker.tick()
         if lc in ("TERMINATED", "SKIPPED", "INTERNAL_ERROR"):
             return (rs or lc), last_task_run_id
-        time.sleep(5)
+        time.sleep(3)
 
 
-def extract_summary_list(run_id: int):
-    """Look through every task of a run and return the first notebook_output
-       that parses into a non-empty list of dicts."""
+def extract_summary_list(run_id):
     info = get_run_details(run_id)
     tasks = info.get("tasks", []) or [{"run_id": run_id}]
     for t in reversed(tasks):
@@ -243,340 +588,306 @@ def extract_summary_list(run_id: int):
     return None
 
 
-def log_history(category: str, job_id: int, run_id, status: str):
+def log_history(category, job_id, run_id, status, start_ts=None, end_ts=None):
+    _end   = end_ts   if end_ts   is not None else time.time()
+    _start = start_ts if start_ts is not None else _end
+    _dur   = max(0.0, _end - _start)
+    if _dur < 60:
+        dur_txt = f"{_dur:.1f}s"
+    elif _dur < 3600:
+        m, s = divmod(int(_dur), 60); dur_txt = f"{m}m {s}s"
+    else:
+        h, r = divmod(int(_dur), 3600); m, s = divmod(r, 60); dur_txt = f"{h}h {m}m {s}s"
     st.session_state.job_history.append({
-        "Category": category, "Job ID": job_id,
-        "Run ID"  : run_id,   "Status": status,
-        "Time"    : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Category"  : category,
+        "Job ID"    : job_id,
+        "Run ID"    : run_id,
+        "Status"    : status,
+        "Start Time": datetime.fromtimestamp(_start).strftime("%Y-%m-%d %H:%M:%S"),
+        "End Time"  : datetime.fromtimestamp(_end).strftime("%Y-%m-%d %H:%M:%S"),
+        "Duration"  : dur_txt,
     })
 
 
 # =========================================================================
-# 6. DINO GAME  (client-side HTML canvas)
+# 8. SUMMARY FILTERING
 # =========================================================================
-DINO_GAME_HTML = """
-<!doctype html>
-<html><head>
-<style>
-  body { margin:0; background:transparent; font-family:'Courier New',monospace; }
-  .wrap { width:100%; padding:8px 4px 4px;
-          background:linear-gradient(180deg,#f8fafc 0%,#e2e8f0 100%);
-          border-radius:12px; text-align:center; }
-  canvas { background:#fff; border:2px solid #94a3b8; border-radius:8px; max-width:100%; }
-  .hint  { color:#475569; font-size:12px; margin-top:4px; }
-  .score { font-weight:700; color:#111; margin-bottom:4px; font-size:13px; }
-</style></head>
-<body>
-<div class="wrap">
-  <div class="score">🦖 Dino Runner — Score : <span id="score">0</span>
-       &nbsp;|&nbsp; High : <span id="high">0</span></div>
-  <canvas id="game" width="720" height="170"></canvas>
-  <div class="hint">Press <b>SPACE</b>/tap to jump · <b>↓</b> to duck · playing keeps you company while the job runs</div>
-</div>
-<script>
-const cvs = document.getElementById('game');
-const ctx = cvs.getContext('2d');
-const W = cvs.width, H = cvs.height, GROUND = H - 26;
-let dino    = { x:60, y:GROUND-40, w:40, h:40, vy:0, ducking:false };
-let gravity = 0.9;
-let obstacles = [], clouds = [];
-let frame=0, score=0, speed=6, gameOver=false, high=0;
-try { high = parseInt(localStorage.getItem('dino_high')||'0'); } catch(e){}
-document.getElementById('high').textContent = high;
+IGNORED_SHEETS     = {"Version.History", "version.history"}
+IGNORED_CATEGORIES = {"PII Present", "Temporal Columns", "Nullability", "Extraction Mode"}
 
-function jump(){ if(gameOver){ reset(); return; }
-    if(dino.y >= GROUND-dino.h-1){ dino.vy = -13; } }
-function duck(on){ dino.ducking=on; dino.h=on?22:40; }
 
-document.addEventListener('keydown', e=>{
-    if(e.code==='Space' || e.code==='ArrowUp'){ e.preventDefault(); jump(); }
-    if(e.code==='ArrowDown'){ duck(true); }
-});
-document.addEventListener('keyup', e=>{ if(e.code==='ArrowDown'){ duck(false); } });
-cvs.addEventListener('click', jump);
-cvs.addEventListener('touchstart', e=>{ e.preventDefault(); jump(); });
-
-function spawn(){
-    if(frame % Math.max(55-Math.floor(score/80), 30) === 0){
-        const big = Math.random() > 0.5;
-        obstacles.push({ x:W+20, y:GROUND-(big?38:24), w:big?18:14, h:big?38:24 });
-    }
-    if(frame % 110 === 0) clouds.push({ x:W, y:20+Math.random()*38 });
-}
-function reset(){ obstacles=[]; clouds=[]; frame=0; score=0; speed=6; gameOver=false;
-    dino.y=GROUND-dino.h; dino.vy=0; }
-function drawDino(){
-    ctx.fillStyle='#111';
-    ctx.fillRect(dino.x, dino.y, dino.w, dino.h);
-    ctx.fillStyle='#fff';
-    ctx.fillRect(dino.x+dino.w-10, dino.y+6, 4, 4);
-    ctx.fillStyle='#111';
-    const off=(frame%10<5)?0:4;
-    if(!dino.ducking){
-        ctx.fillRect(dino.x+6,  dino.y+dino.h, 8, 6-off);
-        ctx.fillRect(dino.x+24, dino.y+dino.h, 8, 6+off-4);
-    }
-}
-function loop(){
-    ctx.clearRect(0,0,W,H);
-    ctx.strokeStyle='#555'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(0,GROUND); ctx.lineTo(W,GROUND); ctx.stroke();
-    ctx.fillStyle='#cbd5e1';
-    clouds.forEach(c=>{
-        ctx.beginPath();
-        ctx.arc(c.x,c.y,9,0,Math.PI*2);
-        ctx.arc(c.x+11,c.y-4,11,0,Math.PI*2);
-        ctx.arc(c.x+22,c.y,9,0,Math.PI*2);
-        ctx.fill(); c.x -= speed/3;
-    });
-    clouds = clouds.filter(c=>c.x>-40);
-    if(!gameOver){
-        dino.vy += gravity; dino.y += dino.vy;
-        if(dino.y > GROUND-dino.h){ dino.y=GROUND-dino.h; dino.vy=0; }
-        spawn();
-        obstacles.forEach(o=>o.x -= speed);
-        obstacles = obstacles.filter(o=>o.x+o.w>0);
-        for(const o of obstacles){
-            if(dino.x < o.x+o.w && dino.x+dino.w > o.x &&
-               dino.y < o.y+o.h && dino.y+dino.h > o.y){
-                gameOver = true;
-                if(score>high){
-                    high = score;
-                    try{ localStorage.setItem('dino_high', high); }catch(e){}
-                    document.getElementById('high').textContent = high;
-                }
-            }
-        }
-        frame++; score++; if(frame%400===0) speed += 0.3;
-        document.getElementById('score').textContent = score;
-    }
-    ctx.fillStyle='#15803d';
-    obstacles.forEach(o=>{
-        ctx.fillRect(o.x, o.y, o.w, o.h);
-        ctx.fillRect(o.x-3, o.y+6, 3, 6);
-        ctx.fillRect(o.x+o.w, o.y+12, 3, 6);
-    });
-    drawDino();
-    if(gameOver){
-        ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(0,0,W,H);
-        ctx.fillStyle='#fff'; ctx.font='bold 20px Courier New'; ctx.textAlign='center';
-        ctx.fillText('GAME OVER — SPACE / tap to restart', W/2, H/2);
-    }
-    requestAnimationFrame(loop);
-}
-loop();
-</script>
-</body></html>
-"""
+def _apply_summary_filters(rows):
+    if not rows:
+        return rows
+    sheet_keys = [k for k in rows[0] if k.lower().replace("_"," ").strip() in ("sheet","sheet name")]
+    cat_keys   = [k for k in rows[0] if k.lower().strip() == "category"]
+    filtered = []
+    for r in rows:
+        sv = next((str(r.get(k,"")).strip() for k in sheet_keys), "")
+        cv = next((str(r.get(k,"")).strip() for k in cat_keys),   "")
+        if sv and sv.lower() in {s.lower() for s in IGNORED_SHEETS}: continue
+        if cv and cv in IGNORED_CATEGORIES: continue
+        filtered.append(r)
+    return filtered
 
 
 # =========================================================================
-# 7. STYLED BUTTON
+# 9. BUTTON HELPERS
 # =========================================================================
-def styled_button(label: str, key: str, status_key: str, disabled=False):
-    cls = {
-        "idle"    : "btn-idle",
-        "running" : "btn-running",
-        "success" : "btn-success",
-        "failed"  : "btn-failed",
-    }[st.session_state.btn_status.get(status_key, "idle")]
+def styled_button(label, key, status_key, disabled=False, use_container_width=True):
+    status = st.session_state.btn_status.get(status_key, "idle")
+    cls = {"idle":"btn-idle","running":"btn-running","success":"btn-success","failed":"btn-failed"}.get(status,"btn-idle")
     st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-    clicked = st.button(label, key=key, use_container_width=True, disabled=disabled)
+    clicked = st.button(label, key=key, disabled=disabled, use_container_width=use_container_width)
+    st.markdown("</div>", unsafe_allow_html=True)
+    return clicked
+
+
+def compact_button(label, key, status_key, disabled=False, use_container_width=True):
+    status = st.session_state.btn_status.get(status_key, "idle")
+    cls = {
+        "idle"   : "btn-compact btn-compact-idle",
+        "running": "btn-compact btn-compact-running",
+        "success": "btn-compact btn-compact-success",
+        "failed" : "btn-compact btn-compact-failed",
+    }.get(status, "btn-compact btn-compact-idle")
+    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+    clicked = st.button(label, key=key, disabled=disabled, use_container_width=use_container_width)
     st.markdown("</div>", unsafe_allow_html=True)
     return clicked
 
 
 # =========================================================================
-# 8. HEADER
+# 10. HEADER STRIP (replaces st.title + gap)
 # =========================================================================
-st.title("🤖 End-to-End AI QA for Ingestion Pipelines")
+st.markdown("""
+<div class="iq-header">
+  <div>
+    <div class="iq-title">⚡ IngestIQ™ &nbsp;·&nbsp; AI-Powered QA for Data Ingestion Pipeline</div>
+    <div class="iq-sub">Upload files &nbsp;→&nbsp; Generate summary &nbsp;→&nbsp; Run validations</div>
+  </div>
+  <div class="iq-badge">TCS · IngestIQ™</div>
+</div>
+""", unsafe_allow_html=True)
+PANEL_HEIGHT = 400
+left, right = st.columns([1, 1], gap="medium")
 
-
-# =========================================================================
-# 9. UPLOAD (LEFT)  +  SUMMARY VIEWER (RIGHT)
-# =========================================================================
-PANEL_HEIGHT = 380   # keep both panels same height → tiny gap below
-
-left, right = st.columns([3.2, 2], gap="medium")
-
-# ----------------------------- LEFT : UPLOAD
+# =====================================================================
+# 11. LEFT PANEL — Upload + inline status
+# =====================================================================
 with left:
     with st.container(border=True, height=PANEL_HEIGHT):
-        st.subheader("📂 Upload Source Files")
+        st.subheader("📁 Upload Files")
 
         uploaded = st.file_uploader(
-            "parquet · csv · xlsx · xls · txt · json · tsv",
-            type=["parquet", "csv", "xlsx", "xls", "xlsm",
-                  "txt", "json", "tsv"],
-            accept_multiple_files=True,
-            key="file_uploader_widget",
+            "Select file(s) (.xlsx)",
+            accept_multiple_files=True, type=["xlsx"],
             label_visibility="collapsed",
         )
 
-        upload_summary_clicked = styled_button(
-            "⬆️  Upload Files & Generate Summary",
+        busy      = st.session_state.pending_action is not None
+        can_upload = bool(uploaded) and not busy
+
+        if uploaded:
+            names = [f.name for f in uploaded]
+            st.caption(f"📎 {', '.join(names)}")
+
+        up_clicked = styled_button(
+            "⬆  Upload & Generate Summary",
             key="upload_summary_btn",
             status_key="upload_summary",
-            disabled=(not uploaded) or (st.session_state.pending_action is not None),
+            disabled=not can_upload,
         )
 
-        if st.session_state.uploaded_stm_names:
-            with st.expander(f"📑 {len(st.session_state.uploaded_stm_names)} "
-                             f"STM file(s) available", expanded=False):
-                st.dataframe(
-                    pd.DataFrame({
-                        "STM Name"       : st.session_state.uploaded_stm_names,
-                        "Workspace Path" : st.session_state.uploaded_file_paths,
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                if st.button("Clear list", key="clear_uploads"):
-                    st.session_state.uploaded_stm_names  = []
-                    st.session_state.uploaded_file_paths = []
+        # ── Inline status lives here ──────────────────────────────────
+        inline_status_slot = st.empty()
+        if st.session_state.inline_status_html:
+            inline_status_slot.markdown(
+                st.session_state.inline_status_html, unsafe_allow_html=True
+            )
+
+        with st.expander("📋 Uploaded files", expanded=False):
+            if st.session_state.uploaded_file_names:
+                for fn in st.session_state.uploaded_file_names:
+                    st.markdown(f"• `{fn}`")
+                if st.button("🗑 Clear list", key="clear_upl"):
+                    st.session_state.uploaded_file_names  = []
+                    st.session_state.uploaded_file_paths  = []
+                    st.session_state.inline_status_html   = ""
                     st.rerun()
+            else:
+                st.caption("No files uploaded yet.")
 
-
-# ----------------------------- RIGHT : SUMMARY VIEWER (scrollable, same height)
+# =====================================================================
+# 12. RIGHT PANEL — Summary Viewer
+# =====================================================================
 with right:
     with st.container(border=True, height=PANEL_HEIGHT):
         st.subheader("📊 Summary Viewer")
 
         if st.session_state.df_summary.empty:
-            st.caption("Upload file(s) and click **Generate Summary** to populate this panel.")
+            st.caption("Upload file(s) and click **Upload & Generate Summary** to populate this panel.")
         else:
-            st.dataframe(
-                st.session_state.df_summary,
-                use_container_width=True,
-                hide_index=True,
-            )
+            df_sv = st.session_state.df_summary
+
+            def _find_col(df, *candidates):
+                wanted = {c.lower().replace("_"," ").strip() for c in candidates}
+                for col in df.columns:
+                    if col.lower().replace("_"," ").strip() in wanted:
+                        return col
+                return None
+
+            stm_col   = _find_col(df_sv, "STM File","STM","STM Name","File")
+            sheet_col = _find_col(df_sv, "Sheet","Sheet Name")
+            display_cols = [c for c in df_sv.columns if c not in (stm_col, sheet_col)]
+
+            SHEET_FLOW = {
+                "raw"    : "Source → Raw",
+                "std_raw": "Raw → Std.Raw",
+                "curated": "Std.Raw → Curated",
+            }
+
+            def _sheet_label(s):
+                sl = s.lower()
+                if "std_raw" in sl: return SHEET_FLOW["std_raw"]
+                if "raw" in sl and "std" not in sl: return SHEET_FLOW["raw"]
+                if "curated" in sl: return SHEET_FLOW["curated"]
+                return s
+
+            if not sheet_col and not stm_col:
+                st.dataframe(df_sv, use_container_width=True, hide_index=True)
+            else:
+                group_keys, groups = [], {}
+                for _, row in df_sv.iterrows():
+                    stm_v   = str(row[stm_col]).strip()   if stm_col   else ""
+                    sheet_v = str(row[sheet_col]).strip() if sheet_col else ""
+                    key = (stm_v, sheet_v)
+                    if key not in groups:
+                        groups[key] = []; group_keys.append(key)
+                    groups[key].append(row)
+
+                for i, (stm_v, sheet_v) in enumerate(group_keys):
+                    flow = _sheet_label(sheet_v) if sheet_v else ""
+                    title = (f"📄 {stm_v}  ·  {flow}" if stm_v and flow
+                             else f"📄 {flow or stm_v or 'Summary'}")
+                    st.markdown(
+                        f"<div class='sec-bar' style='margin-top:{'10px' if i>0 else '0'};'>"
+                        f"{title}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    sub_df = pd.DataFrame(groups[(stm_v, sheet_v)])[display_cols]
+                    st.dataframe(sub_df, use_container_width=True, hide_index=True)
 
 
-# =========================================================================
-# 10. QUALITY ASSURANCE  (4 buttons)
-# =========================================================================
+# =====================================================================
+# 13. QUALITY ASSURANCE PANEL
+# =====================================================================
 with st.container(border=True):
-    st.subheader("🧪 Quality Assurance")
+    st.subheader("🔬 Quality Assurance")
 
-    has_files     = bool(st.session_state.uploaded_stm_names)
+    has_files     = bool(st.session_state.uploaded_file_names)
     busy          = st.session_state.pending_action is not None
     common_disable = (not has_files) or busy
 
     if not has_files:
-        st.info("Upload files first to enable the validation buttons.")
+        st.info("ℹ️ Upload files first to enable validation buttons.")
 
-    run_all_clicked = styled_button(
-        "▶  Run All Validation",
-        key="run_all_btn", status_key="run_all",
-        disabled=common_disable,
-    )
-
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        stm_clicked = styled_button(
-            "🔍 STM Validation",
-            key="stm_val_btn", status_key="stm_val",
-            disabled=common_disable,
+    qa1, qa2, qa3, qa4 = st.columns(4)
+    with qa1:
+        run_all_clicked = compact_button(
+            "▶ Run All Validation", key="run_all_btn",
+            status_key="run_all", disabled=common_disable,
         )
-    with b2:
-        scd_clicked = styled_button(
-            "🔁 SCD Validation",
-            key="scd_val_btn", status_key="scd_val",
-            disabled=common_disable,
+    with qa2:
+        struct_clicked = compact_button(
+            "🔍 Structure Validation", key="struct_val_btn",
+            status_key="struct_val", disabled=common_disable,
         )
-    with b3:
-        tc_clicked = styled_button(
-            "🧬 Test Case Generator",
-            key="tc_gen_btn", status_key="tc_gen",
-            disabled=common_disable,
+    with qa3:
+        scd_clicked = compact_button(
+            "🔁 SCD Validation", key="scd_val_btn",
+            status_key="scd_val", disabled=common_disable,
+        )
+    with qa4:
+        tc_clicked = compact_button(
+            "🧬 Test Case Generator", key="tc_gen_btn",
+            status_key="tc_gen", disabled=common_disable,
         )
 
-    # ---- INITIAL / DELTA picker ------------------------------------
-    if run_all_clicked:
-        st.session_state.pending_validation = "run_all"
-    if scd_clicked:
-        st.session_state.pending_validation = "scd_val"
+    # ── INITIAL / DELTA picker ──────────────────────────────────────
+    if run_all_clicked: st.session_state.pending_validation = "run_all"
+    if scd_clicked:     st.session_state.pending_validation = "scd_val"
 
     if st.session_state.pending_validation in ("run_all", "scd_val") and not busy:
         with st.container(border=True):
             cat = ("Run All Validation"
                    if st.session_state.pending_validation == "run_all"
                    else "SCD Validation")
-            st.markdown(f"#### Choose Validation Type for **{cat}**")
+            st.markdown(f"**Choose Validation Type for {cat}**")
             v_type = st.radio(
-                "Validation Type", ["INITIAL", "DELTA"],
+                "Type", ["INITIAL","DELTA"],
                 horizontal=True, key="v_type_radio",
                 label_visibility="collapsed",
             )
-            cc1, cc2, _ = st.columns([1, 1, 3])
-            confirm = cc1.button("✅ Confirm & Run", key="v_type_confirm")
-            cancel  = cc2.button("Cancel", key="v_type_cancel")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✅ Confirm & Run", key="confirm_vtype", use_container_width=True):
+                    file_csv = ",".join(st.session_state.uploaded_file_names)
+                    params   = {"STM_FILE_NAMES": file_csv, "VALIDATION_TYPE": v_type}
+                    if st.session_state.pending_validation == "run_all":
+                        st.session_state.btn_status["run_all"] = "running"
+                        st.session_state.pending_action = {
+                            "kind":"validation","category":"Run All Validation",
+                            "job_id": JOB_IDS["Run All Validation"],
+                            "params": params, "btn_key":"run_all",
+                        }
+                    else:
+                        st.session_state.btn_status["scd_val"] = "running"
+                        st.session_state.pending_action = {
+                            "kind":"validation","category":"SCD Validation",
+                            "job_id": JOB_IDS["SCD Validation"],
+                            "params": params, "btn_key":"scd_val",
+                        }
+                    st.session_state.pending_validation = None
+                    st.rerun()
+            with c2:
+                if st.button("✖ Cancel", key="cancel_vtype", use_container_width=True):
+                    st.session_state.pending_validation = None
+                    st.rerun()
 
-            if cancel:
-                st.session_state.pending_validation = None
-                st.rerun()
-
-            if confirm:
-                which = st.session_state.pending_validation
-                st.session_state.pending_validation = None
-                stm_csv = ",".join(st.session_state.uploaded_stm_names)
-                params  = {"STM_FILE_NAMES": stm_csv, "VALIDATION_TYPE": v_type}
-                if which == "run_all":
-                    st.session_state.btn_status["run_all"] = "running"
-                    st.session_state.pending_action = {
-                        "kind"    : "validation",
-                        "btn_key" : "run_all",
-                        "category": f"Run All Validation ({v_type})",
-                        "job_id"  : JOB_IDS["Run All Validation"],
-                        "params"  : params,
-                    }
-                else:
-                    st.session_state.btn_status["scd_val"] = "running"
-                    st.session_state.pending_action = {
-                        "kind"    : "validation",
-                        "btn_key" : "scd_val",
-                        "category": f"SCD Validation ({v_type})",
-                        "job_id"  : JOB_IDS["SCD Validation"],
-                        "params"  : params,
-                    }
-                st.rerun()
-
-    # ---- direct buttons --------------------------------------------
-    if stm_clicked and has_files and not busy:
-        st.session_state.btn_status["stm_val"] = "running"
+    # ── Structure Validation ────────────────────────────────────────
+    if struct_clicked and not busy:
+        file_csv = ",".join(st.session_state.uploaded_file_names)
+        st.session_state.btn_status["struct_val"] = "running"
         st.session_state.pending_action = {
-            "kind"    : "validation",
-            "btn_key" : "stm_val",
-            "category": "STM Validation",
-            "job_id"  : JOB_IDS["STM Validation"],
-            "params"  : {"STM_FILE_NAMES": ",".join(st.session_state.uploaded_stm_names)},
+            "kind":"validation","category":"Structure Validation",
+            "job_id": JOB_IDS["Structure Validation"],
+            "params": {"STM_FILE_NAMES": file_csv}, "btn_key":"struct_val",
         }
         st.rerun()
 
-    if tc_clicked and has_files and not busy:
+    # ── Test Case Generator ─────────────────────────────────────────
+    if tc_clicked and not busy:
+        file_csv = ",".join(st.session_state.uploaded_file_names)
         st.session_state.btn_status["tc_gen"] = "running"
         st.session_state.pending_action = {
-            "kind"    : "validation",
-            "btn_key" : "tc_gen",
-            "category": "Test Case Generator",
-            "job_id"  : JOB_IDS["Test Case Generator"],
-            "params"  : {"STM_FILE_NAMES": ",".join(st.session_state.uploaded_stm_names)},
+            "kind":"validation","category":"Test Case Generator",
+            "job_id": JOB_IDS["Test Case Generator"],
+            "params": {"STM_FILE_NAMES": file_csv}, "btn_key":"tc_gen",
         }
         st.rerun()
 
+    # ── QA progress slot (shown inside QA panel) ────────────────────
+    qa_tracker_slot = st.empty()
 
-# =========================================================================
-# 11. UPLOAD+SUMMARY click  →  enqueue pending action
-# =========================================================================
-if (upload_summary_clicked
-        and uploaded
-        and st.session_state.pending_action is None):
 
-    # snapshot the uploaded files as bytes so they survive the rerun
-    files_snapshot = [
-        {"name": f.name, "data": f.getvalue()} for f in uploaded
-    ]
+# =====================================================================
+# 14. UPLOAD — trigger
+# =====================================================================
+if up_clicked and can_upload:
+    files_snapshot = [{"name": f.name, "data": f.getvalue()} for f in uploaded]
     st.session_state.btn_status["upload_summary"] = "running"
+    st.session_state.inline_status_html = ""
     st.session_state.pending_action = {
         "kind"    : "upload_summary",
         "btn_key" : "upload_summary",
@@ -585,42 +896,39 @@ if (upload_summary_clicked
     st.rerun()
 
 
-# =========================================================================
-# 12. PENDING-ACTION EXECUTOR
-#     Runs on the rerun AFTER the button was clicked.  By now the button
-#     is already painted YELLOW because btn_status = "running".
-# =========================================================================
+# =====================================================================
+# 15. PENDING-ACTION EXECUTOR
+# =====================================================================
 if st.session_state.pending_action is not None:
+    action  = st.session_state.pending_action
+    btn_key = action["btn_key"]
 
-    action    = st.session_state.pending_action
-    btn_key   = action["btn_key"]
-    dino_slot = st.empty()
+    if action["kind"] == "upload_summary":
+        # Progress shown inline inside the upload box
+        tracker = ProgressTracker(inline_status_slot, "Uploading & Generating Summary", compact=True)
+    else:
+        # Progress shown in the QA tracker slot
+        tracker = ProgressTracker(qa_tracker_slot, action["category"], compact=False)
 
-    # -- dino + status placeholder --------------------------------
-    with dino_slot.container():
-        components.html(DINO_GAME_HTML, height=230, scrolling=False)
-        status_slot = st.empty()
+    tracker.start()
 
     try:
         if action["kind"] == "upload_summary":
             files = action["files"]
-            category_label = "File Copy + Summary"
-
-            # --- 1. upload each file to the workspace --------------
-            status_slot.info("📤 Uploading files to workspace…")
-            ws_paths, stm_names, errs = [], [], []
+            ws_paths, file_names, errs = [], [], []
             for f in files:
                 ok, detail = upload_to_workspace(f["name"], f["data"])
                 if ok:
                     ws_paths.append(detail)
-                    stm_names.append(_clean_stm_name(f["name"]))
+                    file_names.append(_clean_file_name(f["name"]))
                 else:
                     errs.append(f"{f['name']} → {detail}")
+                tracker.tick()
 
             if not ws_paths:
                 raise Exception(f"Upload failed: {errs}")
 
-            # --- 2. File-Copy job -----------------------------------
+            _copy_start = time.time()
             ok, copy_run = trigger_job(
                 FILE_COPY_JOB_ID,
                 {"workspace_file_paths": ",".join(ws_paths)},
@@ -628,99 +936,91 @@ if st.session_state.pending_action is not None:
             if not ok:
                 raise Exception(f"File-Copy trigger failed: {copy_run}")
 
-            copy_state, _ = poll_until_done(copy_run, status_slot, "File-Copy")
-            log_history("File Copy", FILE_COPY_JOB_ID, copy_run, copy_state)
+            copy_state, _ = poll_until_done(copy_run, tracker, "File-Copy")
+            log_history("File Copy", FILE_COPY_JOB_ID, copy_run, copy_state,
+                        start_ts=_copy_start, end_ts=time.time())
             if copy_state != "SUCCESS":
                 raise Exception(f"File-Copy ended with {copy_state}")
 
-            # remember uploaded files in session
-            st.session_state.uploaded_stm_names = sorted(set(
-                st.session_state.uploaded_stm_names + stm_names))
+            st.session_state.uploaded_file_names = sorted(set(
+                st.session_state.uploaded_file_names + file_names))
             st.session_state.uploaded_file_paths = sorted(set(
                 st.session_state.uploaded_file_paths + ws_paths))
 
-            # --- 3. Summary job -------------------------------------
+            _sum_start = time.time()
             ok, sum_run = trigger_job(
                 SUMMARY_JOB_ID,
-                {"stm_file_names": ",".join(stm_names)},
+                {"stm_file_names": ",".join(file_names)},
             )
             if not ok:
                 raise Exception(f"Summary trigger failed: {sum_run}")
 
-            sum_state, _ = poll_until_done(sum_run, status_slot, "Summary")
-            log_history("Summary", SUMMARY_JOB_ID, sum_run, sum_state)
+            sum_state, _ = poll_until_done(sum_run, tracker, "Summary")
+            log_history("Summary", SUMMARY_JOB_ID, sum_run, sum_state,
+                        start_ts=_sum_start, end_ts=time.time())
             if sum_state != "SUCCESS":
                 raise Exception(f"Summary ended with {sum_state}")
 
-            # --- 4. Pull summary JSON -------------------------------
             data = extract_summary_list(sum_run)
             if data:
-                st.session_state.df_summary = pd.DataFrame(data)
+                data = _apply_summary_filters(data)
+                if data:
+                    st.session_state.df_summary = pd.DataFrame(data)
 
             st.session_state.btn_status[btn_key] = "success"
+            tracker.done()
+            # Persist the final "done" HTML in session so it survives rerun
+            # (we re-render it manually on next load via inline_status_slot)
+            st.session_state.inline_status_html = ""   # clear after success
 
         elif action["kind"] == "validation":
             category = action["category"]
             job_id   = action["job_id"]
             params   = action["params"]
 
+            _val_start = time.time()
             ok, run_id = trigger_job(job_id, params)
             if not ok:
                 raise Exception(f"Trigger failed: {run_id}")
 
-            state, _ = poll_until_done(run_id, status_slot, category)
-            log_history(category, job_id, run_id, state)
+            state, _ = poll_until_done(run_id, tracker, category)
+            log_history(category, job_id, run_id, state,
+                        start_ts=_val_start, end_ts=time.time())
             if state != "SUCCESS":
                 raise Exception(f"{category} ended with {state}")
 
             st.session_state.btn_status[btn_key] = "success"
+            tracker.done()
 
     except Exception as e:
         st.session_state.btn_status[btn_key] = "failed"
-        log_history(action.get("category", action["kind"]), 0, "-", f"ERROR: {e}")
+        tracker.fail(str(e)[:120])
+        log_history(action.get("category", action["kind"]), 0, "-", f"ERROR: {e}",
+                    start_ts=tracker.start_ts, end_ts=time.time())
 
     finally:
         st.session_state.pending_action = None
-        dino_slot.empty()
+        time.sleep(1.5)
+        tracker.clear()
         st.rerun()
 
 
-# =========================================================================
-# 13. JOB EXECUTION HISTORY
-# =========================================================================
+# =====================================================================
+# 16. JOB EXECUTION HISTORY
+# =====================================================================
 st.divider()
-st.subheader("📜 Job Execution History")
+with st.container(border=True):
+    st.subheader("📋 Job Execution History")
+    if st.session_state.job_history:
+        hist = pd.DataFrame(st.session_state.job_history)
 
-if st.session_state.job_history:
-    hist = pd.DataFrame(st.session_state.job_history)
+        def _color_status(val):
+            colors = {
+                "SUCCESS": "color:#16A34A;font-weight:700",
+                "FAILED" : "color:#DC2626;font-weight:700",
+            }
+            return colors.get(val.upper() if isinstance(val, str) else "", "")
 
-    def _row_style(row):
-        s = str(row["Status"])
-        if s == "SUCCESS":
-            return ["background-color:#dcfce7;color:#065f46;"] * len(row)
-        if s.startswith("ERROR") or s in ("FAILED", "INTERNAL_ERROR"):
-            return ["background-color:#fee2e2;color:#7f1d1d;"] * len(row)
-        if s in ("CANCELED", "SKIPPED"):
-            return ["background-color:#fef9c3;color:#713f12;"] * len(row)
-        return [""] * len(row)
-
-    st.dataframe(
-        hist.style.apply(_row_style, axis=1),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    if st.button("🧹 Clear history", key="clear_history"):
-        st.session_state.job_history = []
-        st.rerun()
-else:
-    st.info("No jobs executed yet.")
-
-
-# =========================================================================
-# 14. FOOTER
-# =========================================================================
-st.markdown("""
----
-<center><sub>Built with ❤️ on Streamlit + Databricks Jobs API</sub></center>
-""", unsafe_allow_html=True)
+        st.dataframe(hist, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No jobs run yet.")
